@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dynamic Pivot Dashboard with Luckysheet</title>
+<!-- Luckysheet CSS (local from your GitHub fork) -->
+<link rel="stylesheet" href="lib/luckysheet/dist/luckysheet.css">
+<!-- Luckysheet JS (local from your GitHub fork) -->
+<script src="lib/luckysheet/dist/luckysheet.umd.js"></script>
+<!-- jQuery + jQuery UI -->
+<script src="https://unpkg.com/jquery"></script>
+<script src="https://code.jquery.com/ui/1.13.2/jquery-ui.min.js"></script>
+<link rel="stylesheet" href="https://code.jquery.com/ui/1.13.2/themes/base/jquery-ui.css">
+<!-- XLSX library -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+h2 { margin-bottom: 10px; }
+#luckysheet { height: 600px; width: 100%; margin-top: 15px; }
+.filter-section {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+button {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 6px;
+  background-color: #007bff;
+  color: white;
+  cursor: pointer;
+}
+button:hover { background-color: #0056b3; }
+#toggleFilters, #saveConfig, #loadConfig { background-color: #6c757d; }
+#toggleFilters:hover, #saveConfig:hover, #loadConfig:hover { background-color: #5a6268; }
+.filter-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 6px;
+  background: white;
+  padding: 10px;
+  border-radius: 8px;
+  box-shadow: 0 0 4px rgba(0,0,0,0.1);
+  max-height: 180px;
+  overflow-y: auto;
+  transition: max-height 0.3s ease;
+}
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+}
+.filter-group label { color: #333; margin-bottom: 3px; font-weight: 500; }
+input[type="text"], input[type="file"] {
+  padding: 5px;
+  border-radius: 5px;
+  border: 1px solid #ccc;
+  font-size: 12px;
+}
+.highlight-completed { background-color: #d4edda !important; }
+.highlight-notcompleted { background-color: #f8d7da !important; }
+</style>
+</head>
+<body>
+<h2>📊 Construction ITR MCC Tracker - Dynamic Pivot Dashboard</h2>
+<div class="filter-section">
+  <input id="fileInput" type="file" accept=".xlsx, .xls" />
+  <button id="applyFilter">Apply Filters</button>
+  <button id="clearFilter">Clear Filters</button>
+  <button id="exportExcel">Export Pivot to Excel</button>
+  <button id="saveConfig">Download Pivot Config</button>
+  <input id="loadConfigInput" type="file" accept=".json" style="display: none;" />
+  <button id="loadConfig">Upload Pivot Config</button>
+  <button id="toggleFilters">Show More Filters</button>
+</div>
+<div id="dynamicFilters" class="filter-container"></div>
+<div id="luckysheet"></div>
+<script>
+let allData = [];
+let headers = [];
+let luckysheetInstance = null;
+// === Handle Excel Upload ===
+document.getElementById("fileInput").addEventListener("change", handleFileUpload);
+function handleFileUpload(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(evt) {
+    const data = new Uint8Array(evt.target.result);
+    const workbook = XLSX.read(data, { type: "array" });
+    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+    allData = XLSX.utils.sheet_to_json(firstSheet);
+    if (allData.length === 0) return alert("No data found!");
+    headers = Object.keys(allData[0]);
+    buildDynamicFilters(headers);
+    loadDataToLuckysheet(allData);
+  };
+  reader.readAsArrayBuffer(file);
+}
+// === Build Dynamic Filters ===
+function buildDynamicFilters(headers) {
+  const container = $("#dynamicFilters");
+  container.empty();
+  const saved = JSON.parse(localStorage.getItem("pivotFilters")) || {};
+  headers.forEach((header, index) => {
+    const safeId = header.replace(/\s+/g, "_");
+    const value = saved[safeId] || "";
+    const hiddenClass = index > 5 ? "extra-filter" : ""; 
+    container.append(`
+      <div class="filter-group ${hiddenClass}">
+        <label>${header}</label>
+        <input type="text" id="filter_${safeId}" value="${value}" placeholder="Comma-separated">
+      </div>
+    `);
+  });
+  $(".extra-filter").hide();
+}
+// === Toggle Show/Hide Filters ===
+$("#toggleFilters").on("click", function() {
+  const hidden = $(".extra-filter:hidden").length > 0;
+  $(".extra-filter").slideToggle(150);
+  $(this).text(hidden ? "Hide Extra Filters" : "Show More Filters");
+});
+// === Load Data to Luckysheet ===
+function loadDataToLuckysheet(data) {
+  const sheetData = [];
+  sheetData.push(headers);
+  data.forEach(row => {
+    sheetData.push(headers.map(header => row[header] || ""));
+  });
+  const options = {
+    container: 'luckysheet',
+    title: 'Data Sheet',
+    lang: 'en',
+    data: [{
+      name: 'Data',
+      celldata: [],
+      row: sheetData.length,
+      column: headers.length,
+      config: {},
+      conditionformat_save: [],
+      index: 0
+    }]
+  };
+  // Convert sheetData to Luckysheet celldata format
+  sheetData.forEach((row, r) => {
+    row.forEach((v, c) => {
+      options.data[0].celldata.push({ r, c, v: { m: v, v } });
+    });
+  });
+  // Conditional formatting
+  const statusIndex = headers.indexOf("Checklist Status");
+  if (statusIndex !== -1) {
+    options.data[0].conditionformat_save = [
+      {
+        type: 'dataBar',
+        cellrange: { row: [1, sheetData.length - 1], column: [statusIndex, statusIndex] },
+        format: { color: '#d4edda' },
+        value: 'Completed'
+      },
+      {
+        type: 'dataBar',
+        cellrange: { row: [1, sheetData.length - 1], column: [statusIndex, statusIndex] },
+        format: { color: '#f8d7da' },
+        value: 'Not Completed'
+      }
+    ];
+  }
+  // Create Luckysheet
+  luckysheet.destroy();
+  luckysheetInstance = luckysheet.create(options);
+}
+// === Apply Filters ===
+function applyFilters() {
+  if (allData.length === 0) return alert("Upload Excel file first!");
+  const filters = {};
+  $("#dynamicFilters input").each(function() {
+    const key = $(this).attr("id").replace("filter_", "").replace(/_/g, " ");
+    const values = $(this).val().toLowerCase().split(",").map(v => v.trim()).filter(Boolean);
+    if (values.length > 0) filters[key] = values;
+  });
+  // Save filters
+  const saveData = {};
+  $("#dynamicFilters input").each(function() {
+    saveData[$(this).attr("id").replace("filter_", "")] = $(this).val();
+  });
+  localStorage.setItem("pivotFilters", JSON.stringify(saveData));
+  // Filter data
+  const filtered = allData.filter(row =>
+    Object.entries(filters).every(([key, values]) =>
+      values.some(v => (row[key] || "").toString().toLowerCase().includes(v))
+    )
+  );
+  loadDataToLuckysheet(filtered);
+}
+// === Clear Filters ===
+function clearFilters() {
+  $("#dynamicFilters input").val("");
+  localStorage.removeItem("pivotFilters");
+  loadDataToLuckysheet(allData);
+}
+// === Export to Excel ===
+function exportToExcel() {
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.json_to_sheet(allData);
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Data");
+  XLSX.writeFile(workbook, "PivotTableExport.xlsx");
+}
+// === Event bindings ===
+$("#applyFilter").on("click", applyFilters);
+$("#clearFilter").on("click", clearFilters);
+$("#exportExcel").on("click", exportToExcel);
+$("#saveConfig").on("click", downloadPivotConfig);
+</script>
+</body>
+</html>
